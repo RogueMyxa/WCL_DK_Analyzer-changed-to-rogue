@@ -1,20 +1,20 @@
-import React, {useCallback, useContext } from "react";
-import {LogAnalysisContext} from "./LogAnalysisContext.jsx";
+import React, { useCallback, useContext } from "react";
+import { LogAnalysisContext } from "./LogAnalysisContext.jsx";
 
 import BloodRune from "./assets/blood_rune.webp";
 import FrostRune from "./assets/frost_rune.webp";
 import UnholyRune from "./assets/unholy_rune.webp";
 import DeathRune from "./assets/death_rune.webp";
-import { ArmyAnalysis } from "./ArmyAnalysis.jsx"
-import { ArmyDynamicAnalysis } from "./ArmyDynamicAnalysis.jsx"
-import { GargoyleAnalysis } from "./GargoyleAnalysis"
-import { DarkTransformationAnalysis } from "./DarkTransformationAnalysis"
-import { GhoulAnalysis } from "./GhoulAnalysis.jsx"
-import { RaiseDeadAnalysis } from "./RaiseDeadAnalysis.jsx"
-import { SoulReaperAnalysis } from "./SoulReaperAnalysis.jsx"
-import { OutbreakAnalysis } from "./OutbreakAnalysis.jsx"
-import { Tabs, Tab } from "./Tabs.jsx"
-import { formatIcon, formatTimestamp, formatUpTime, formatUsage } from "./helpers"
+import { ArmyAnalysis } from "./ArmyAnalysis.jsx";
+import { ArmyDynamicAnalysis } from "./ArmyDynamicAnalysis.jsx";
+import { GargoyleAnalysis } from "./GargoyleAnalysis";
+import { DarkTransformationAnalysis } from "./DarkTransformationAnalysis";
+import { GhoulAnalysis } from "./GhoulAnalysis.jsx";
+import { RaiseDeadAnalysis } from "./RaiseDeadAnalysis.jsx";
+import { SoulReaperAnalysis } from "./SoulReaperAnalysis.jsx";
+import { OutbreakAnalysis } from "./OutbreakAnalysis.jsx";
+import { Tabs, Tab } from "./Tabs.jsx";
+import { formatIcon, formatTimestamp, formatUpTime, formatUsage } from "./helpers";
 
 const formatRune = (rune, i) => {
   const src = {
@@ -67,24 +67,34 @@ const formatRanking = (ranking) => {
 const Summary = () => {
   const analysis = useContext(LogAnalysisContext);
 
-  const formatEvent = useCallback((event, showRunes, showProcs, i) => {
+  const formatEvent = useCallback((event, showRunes, showProcs, i, isSubRogue) => {
     const abilityIcon = event.ability_icon;
     const icon = abilityIcon ? (
-      <img
-        src={abilityIcon}
-        title={event.ability}
-        alt={event.ability}
-        width={20}
-      />
+      <img src={abilityIcon} title={event.ability} alt={event.ability} width={20} />
     ) : null;
     const offset = event.gcd_offset;
     let ability = event.ability;
     let timestamp = <span>{formatTimestamp(event.timestamp)}</span>;
-    let runicPower = String(Math.floor(event.runic_power / 10)).padStart(
-      3,
-      " "
-    );
-    let bloodCharges = String(event.blood_charges || 0).padStart(2, " ");
+
+    // RP / Energy
+    let runicPower;
+    if (event.runic_power != null) {
+      runicPower = String(Math.floor(event.runic_power / 10)).padStart(3, " ");
+    } else if (isSubRogue && event.energy != null) {
+      runicPower = String(event.energy).padStart(3, " ");
+    } else {
+      runicPower = "---";
+    }
+
+    // Blood charges / CP
+    let bloodCharges;
+    if (event.blood_charges != null) {
+      bloodCharges = String(event.blood_charges || 0).padStart(2, " ");
+    } else if (isSubRogue && event.combo_points != null) {
+      bloodCharges = String(event.combo_points).padStart(2, " ");
+    } else {
+      bloodCharges = "--";
+    }
 
     let abilityTdClass = "";
     let abilityDivClass = "ability";
@@ -111,7 +121,9 @@ const Summary = () => {
 
     if (event.type === "death_rune_waste") {
       abilityTdClass = "death-rune-waste";
-      ability = `${ability} wasted ${event.death_runes_wasted} death rune${event.death_runes_wasted > 1 ? 's' : ''}`;
+      ability = `${ability} wasted ${event.death_runes_wasted} death rune${
+        event.death_runes_wasted > 1 ? "s" : ""
+      }`;
     }
 
     if (event.type === "km_usage_timing") {
@@ -124,8 +136,7 @@ const Summary = () => {
       rowClass = "ability-miss";
       ability = (
         <>
-          {ability}{" "}
-          <span className={"red"}>({event.hit_type.toLowerCase()})</span>
+          {ability} <span className={"red"}>({event.hit_type.toLowerCase()})</span>
         </>
       );
     }
@@ -134,8 +145,11 @@ const Summary = () => {
       abilityDivClass += " filler-cast";
     }
 
-    const hasUnholyPresence = event.buffs.some((buff) => buff.ability === "Unholy Presence")
-    const assumedGCD = hasUnholyPresence ? 1000 : 1500
+    const buffs = event.buffs || [];
+    const hasUnholyPresence = buffs.some(
+      (buff) => buff.ability === "Unholy Presence"
+    );
+    const assumedGCD = hasUnholyPresence ? 1000 : 1500;
 
     if (event.has_gcd && offset) {
       let color;
@@ -160,7 +174,7 @@ const Summary = () => {
     const formatBuff = (buff) => {
       return (
         <img
-          key={buff.abilityGameID}
+          key={buff.abilityGameID || `${buff.ability}-${buff.timestamp || i}`}
           src={buff.ability_icon}
           title={buff.ability}
           alt={buff.ability}
@@ -170,7 +184,7 @@ const Summary = () => {
     };
 
     let procsUsed = [];
-    event.buffs.forEach((buff) => {
+    buffs.forEach((buff) => {
       if (event.consumes_km && buff.ability === "Killing Machine") {
         procsUsed.push(buff);
       }
@@ -178,6 +192,10 @@ const Summary = () => {
         procsUsed.push(buff);
       }
     });
+
+    const runesBefore = event.runes_before || [];
+    const runesAfter = event.runes || [];
+    const debuffs = event.debuffs || [];
 
     return (
       <tr className={rowClass} key={i}>
@@ -197,39 +215,36 @@ const Summary = () => {
           <div className={"blood-charges"}>{bloodCharges}</div>
         </td>
         {showRunes ? (
-          <>
-            <td>
-              <div className={"runes"}>
-                {event.runes_before.map(formatRune)}
-              </div>
-              {event.modifies_runes && (
-                <div className={"runes"}>{event.runes.map(formatRune)}</div>
-              )}
-            </td>
-          </>
+          <td>
+            <div className={"runes"}>{runesBefore.map(formatRune)}</div>
+            {event.modifies_runes && (
+              <div className={"runes"}>{runesAfter.map(formatRune)}</div>
+            )}
+          </td>
         ) : null}
         <td>
-          <div className={"buffs"}>{event.buffs.map(formatBuff)}</div>
+          <div className={"buffs"}>{buffs.map(formatBuff)}</div>
         </td>
         <td>
-          <div className={"debuffs"}>{(event.debuffs || []).map(formatBuff)}</div>
+          <div className={"debuffs"}>{debuffs.map(formatBuff)}</div>
         </td>
-        {showProcs &&
+        {showProcs && (
           <td>
             <div className={"procs-used"}>{procsUsed.map(formatBuff)}</div>
           </td>
-        }
+        )}
       </tr>
     );
   }, []);
 
   const formatGCDLatency = useCallback((gcdLatency, infoOnly) => {
+    if (!gcdLatency) return null;
     const averageLatency = gcdLatency.average_latency;
 
     let color = "green";
 
     if (infoOnly) {
-      color = "hl"
+      color = "hl";
     } else if (gcdLatency.color) {
       // Use color from backend if provided
       color = gcdLatency.color;
@@ -243,31 +258,33 @@ const Summary = () => {
       <div className={"gcd-latency"}>
         <i className="fa fa-clock-o hl" aria-hidden="true"></i>
         Your average GCD delay was{" "}
-        <span className={color}>{averageLatency.toFixed(2)} ms</span>
+          <span className={color}>{averageLatency.toFixed(2)} ms</span>
       </div>
     );
   }, []);
 
   const formatFlask = useCallback((flaskUsage) => {
+    if (!flaskUsage) return null;
     const hasFlask = flaskUsage.has_flask;
 
     if (hasFlask) {
       return (
         <div className={"flask-usage"}>
           <i className="fa fa-check green" aria-hidden="true"></i>
-          You had a Flask (Winter's Bite or Falling Leaves)
+          You had a Flask (Winter&apos;s Bite or Falling Leaves)
         </div>
       );
     }
     return (
       <div className={"flask-usage"}>
         <i className="fa fa-times red" aria-hidden="true"></i>
-        You did not have a Flask (Winter's Bite or Falling Leaves)
+        You did not have a Flask (Winter&apos;s Bite or Falling Leaves)
       </div>
     );
   }, []);
 
   const formatFood = useCallback((foodUsage) => {
+    if (!foodUsage) return null;
     const hasFood = foodUsage.has_food;
 
     if (hasFood) {
@@ -287,22 +304,23 @@ const Summary = () => {
   }, []);
 
   const formatKillingMachineSpeed = useCallback((killingMachine) => {
+    if (!killingMachine) return null;
     const totalTimeSeconds = killingMachine.total_time_seconds || 0;
 
     return (
       <div className={"killing-machine-speed"}>
         <i className="fa fa-hourglass-half hl" aria-hidden="true"></i>
         Total time to use KM procs across fight:{" "}
-        <span className={"hl"}>
-          {totalTimeSeconds.toFixed(1)} seconds
-        </span>
+        <span className={"hl"}>{totalTimeSeconds.toFixed(1)} seconds</span>
       </div>
     );
   }, []);
 
   const formatKillingMachineRotation = useCallback((killingMachine) => {
+    if (!killingMachine) return null;
     const averageLatency = killingMachine.avg_latency || 0;
-    const averageLatencySeconds = killingMachine.avg_time_seconds || (averageLatency / 1000);
+    const averageLatencySeconds =
+      killingMachine.avg_time_seconds || averageLatency / 1000;
     const numUsed = killingMachine.num_used;
     const numTotal = killingMachine.num_total;
     let color = "green";
@@ -321,14 +339,13 @@ const Summary = () => {
           {numUsed} of {numTotal}
         </span>{" "}
         Killing Machine procs with an average delay of{" "}
-        <span className={color}>
-          {averageLatencySeconds.toFixed(2)} seconds
-        </span>
+        <span className={color}>{averageLatencySeconds.toFixed(2)} seconds</span>
       </div>
     );
   }, []);
 
   const formatKillingMachineBreakdown = useCallback((killingMachine) => {
+    if (!killingMachine) return null;
     const kmOnFS = killingMachine.km_on_frost_strike || 0;
     const kmOnObliterate = killingMachine.km_on_obliterate || 0;
     const fsPercentage = killingMachine.frost_strike_percentage || 0;
@@ -366,6 +383,7 @@ const Summary = () => {
   }, []);
 
   const formatObliterateDuringRime = useCallback((obliterateDuringRime) => {
+    if (!obliterateDuringRime) return null;
     const badUsages = obliterateDuringRime.bad_usages;
     const totalObliterates = obliterateDuringRime.total_obliterates;
 
@@ -383,10 +401,13 @@ const Summary = () => {
           <i className="fa fa-times red" aria-hidden="true"></i>
           You used Obliterate during Rime procs{" "}
           <span className={"red"}>
-            {badUsages} time{badUsages > 1 ? 's' : ''}
+            {badUsages} time{badUsages > 1 ? "s" : ""}
           </span>
           {totalObliterates > 0 && (
-            <span className={"hl"}> (out of {totalObliterates} total Obliterates)</span>
+            <span className={"hl"}>
+              {" "}
+              (out of {totalObliterates} total Obliterates)
+            </span>
           )}
         </div>
       );
@@ -394,6 +415,7 @@ const Summary = () => {
   }, []);
 
   const formatObliterateDeathRuneUsage = useCallback((obliterateDeathRune) => {
+    if (!obliterateDeathRune) return null;
     const badUsages = obliterateDeathRune.bad_usages;
     const totalObliterates = obliterateDeathRune.total_obliterates;
 
@@ -411,10 +433,13 @@ const Summary = () => {
           <i className="fa fa-times red" aria-hidden="true"></i>
           You used suboptimal rune combinations for Obliterate{" "}
           <span className={"red"}>
-            {badUsages} time{badUsages > 1 ? 's' : ''}
+            {badUsages} time{badUsages > 1 ? "s" : ""}
           </span>
           {totalObliterates > 0 && (
-            <span className={"hl"}> (out of {totalObliterates} total Obliterates)</span>
+            <span className={"hl"}>
+              {" "}
+              (out of {totalObliterates} total Obliterates)
+            </span>
           )}
         </div>
       );
@@ -422,6 +447,7 @@ const Summary = () => {
   }, []);
 
   const formatPillarOfFrostUsage = useCallback((pillarUsage) => {
+    if (!pillarUsage) return null;
     const numUsed = pillarUsage.num_used;
     const possibleUsages = pillarUsage.possible_usages;
     const usagePercentage = pillarUsage.usage_percentage;
@@ -447,12 +473,16 @@ const Summary = () => {
         <span className={colorClass}>
           {numUsed} out of {possibleUsages} possible times
         </span>
-        <span className={"hl"}> ({(usagePercentage * 100).toFixed(0)}%)</span>
+        <span className={"hl"}>
+          {" "}
+          ({(usagePercentage * 100).toFixed(0)}%)
+        </span>
       </div>
     );
   }, []);
 
   const formatPlagueStrikeDeathRuneUsage = useCallback((plagueStrikeDeathRune) => {
+    if (!plagueStrikeDeathRune) return null;
     const badUsages = plagueStrikeDeathRune.bad_usages;
     const totalPlagueStrikes = plagueStrikeDeathRune.total_plague_strikes;
 
@@ -470,10 +500,13 @@ const Summary = () => {
           <i className="fa fa-times red" aria-hidden="true"></i>
           You used Plague Strike with Death runes{" "}
           <span className={"red"}>
-            {badUsages} time{badUsages > 1 ? 's' : ''}
+            {badUsages} time{badUsages > 1 ? "s" : ""}
           </span>
           {totalPlagueStrikes > 0 && (
-            <span className={"hl"}> (out of {totalPlagueStrikes} total Plague Strikes)</span>
+            <span className={"hl"}>
+              {" "}
+              (out of {totalPlagueStrikes} total Plague Strikes)
+            </span>
           )}
         </div>
       );
@@ -481,7 +514,7 @@ const Summary = () => {
   }, []);
 
   const formatPlagueLeech = useCallback((plagueLeech, isUnholy = false) => {
-    if (!plagueLeech.has_talent) {
+    if (!plagueLeech || !plagueLeech.has_talent) {
       return null; // Don't show if player doesn't have the talent
     }
 
@@ -498,7 +531,10 @@ const Summary = () => {
           <span className={"hl"}>
             {numUsed} out of {numPossible} possible times
           </span>
-          <span className={"hl"}> ({(usagePercentage * 100).toFixed(0)}%)</span>
+          <span className={"hl"}>
+            {" "}
+            ({(usagePercentage * 100).toFixed(0)}%)
+          </span>
         </div>
       );
     }
@@ -525,12 +561,16 @@ const Summary = () => {
         <span className={colorClass}>
           {numUsed} out of {numPossible} possible times
         </span>
-        <span className={"hl"}> ({(usagePercentage * 100).toFixed(0)}%)</span>
+        <span className={"hl"}>
+          {" "}
+          ({(usagePercentage * 100).toFixed(0)}%)
+        </span>
       </div>
     );
   }, []);
 
   const formatEmpoweredRuneWeapon = useCallback((erw) => {
+    if (!erw) return null;
     const numUsages = erw.num_usages;
     const totalRunesWasted = erw.total_runes_wasted;
     const totalRpWasted = erw.total_rp_wasted;
@@ -577,137 +617,232 @@ const Summary = () => {
         <div>
           {runeIcon}
           Empowered Rune Weapon runes wasted:{" "}
-          <span className={runeColor}>
-            {totalRunesWasted} total
+          <span className={runeColor}>{totalRunesWasted} total</span>
+          <span className={"hl"}>
+            {" "}
+            ({avgRunesWasted.toFixed(1)} avg per usage)
           </span>
-          <span className={"hl"}> ({avgRunesWasted.toFixed(1)} avg per usage)</span>
         </div>
         <div>
           {rpIcon}
           Empowered Rune Weapon RP wasted:{" "}
-          <span className={rpColor}>
-            {totalRpWasted} total
+          <span className={rpColor}>{totalRpWasted} total</span>
+          <span className={"hl"}>
+            {" "}
+            ({avgRpWasted.toFixed(1)} avg per usage)
           </span>
-          <span className={"hl"}> ({avgRpWasted.toFixed(1)} avg per usage)</span>
         </div>
       </div>
     );
   }, []);
 
-
   const formatPotions = useCallback((potions) => {
+    if (!potions) return null;
     const potionsUsed = potions.potions_used;
-    const total = potionsUsed > 2 ? potionsUsed : 2
+    const total = potionsUsed > 2 ? potionsUsed : 2;
 
     if (potionsUsed >= 2) {
       return (
         <div className={"potions"}>
           <i className="fa fa-check green" aria-hidden="true"></i>
-          You used <span className={"hl"}>{potionsUsed} of {total}</span> Potions (Mogu Power)
+          You used{" "}
+          <span className={"hl"}>
+            {potionsUsed} of {total}
+          </span>{" "}
+          Potions (Mogu Power)
         </div>
       );
     }
     return (
       <div className={"potions"}>
         <i className="fa fa-times red" aria-hidden="true"></i>
-        You used <span className={"hl"}>{potionsUsed} of 2</span> Potions (Mogu Power)
+        You used{" "}
+        <span className={"hl"}>
+          {potionsUsed} of 2
+        </span>{" "}
+        Potions (Mogu Power)
       </div>
     );
   }, []);
 
-
   const formatRunicPower = useCallback((runicPower) => {
-    const overcapTimes = runicPower.overcap_times
-    const overcapSum = runicPower.overcap_sum
-    const gainedSum = runicPower.gained_sum
+    if (!runicPower) return null;
+    const overcapTimes = runicPower.overcap_times;
+    const overcapSum = runicPower.overcap_sum;
+    const gainedSum = runicPower.gained_sum;
 
     return (
       <div className={"runic-power-analysis"}>
         <div>
           <i className="fa fa-info hl" aria-hidden="true"></i>
-          You gained a total of <span className={"hl"}>{gainedSum}</span> Runic Power using AMS
+          You gained a total of{" "}
+          <span className={"hl"}>{gainedSum}</span> Runic Power using AMS
         </div>
         <div>
           <i className="fa fa-info hl" aria-hidden="true"></i>
-          You over-capped Runic Power <span className={"hl"}>
-            {overcapTimes}
-          </span>{" "}
-          times for a total of
+          You over-capped Runic Power{" "}
+          <span className={"hl"}>{overcapTimes}</span> times for a total of
           <span className={"hl"}> {overcapSum} RP</span> wasted
         </div>
       </div>
     );
   }, []);
 
+  const formatFesteringStrikeWaste = useCallback((festeringStrikeWaste) => {
+    if (!festeringStrikeWaste) return null;
+    const oneDeathRune = festeringStrikeWaste.one_death_rune_casts;
+    const twoDeathRune = festeringStrikeWaste.two_death_rune_casts;
+    const totalWasted = festeringStrikeWaste.total_death_runes_wasted;
 
-  const formatFesteringStrikeWaste = useCallback(festeringStrikeWaste => {
-    const oneDeathRune = festeringStrikeWaste.one_death_rune_casts
-    const twoDeathRune = festeringStrikeWaste.two_death_rune_casts
-    const totalWasted = festeringStrikeWaste.total_death_runes_wasted
-
-    const icon = <i className="fa fa-info hl" aria-hidden="true"></i>
+    const icon = <i className="fa fa-info hl" aria-hidden="true"></i>;
 
     return (
       <div className={"festering-strike-waste"}>
         {icon}
-        Festering Strike wasted <span className={"hl"}>{totalWasted}</span> death runes
+        Festering Strike wasted{" "}
+        <span className={"hl"}>{totalWasted}</span> death runes
         {totalWasted > 0 && (
-          <span> (<span className={"hl"}>{oneDeathRune}</span> × 1DR, <span className={"hl"}>{twoDeathRune}</span> × 2DR)</span>
+          <span>
+            {" "}
+            (<span className={"hl"}>{oneDeathRune}</span> × 1DR,{" "}
+            <span className={"hl"}>{twoDeathRune}</span> × 2DR)
+          </span>
         )}
       </div>
-    )
-  }, [])
+    );
+  }, []);
 
-  const formatBloodChargeCaps = useCallback(bloodChargeCaps => {
+  const formatBloodChargeCaps = useCallback((bloodChargeCaps) => {
+    if (!bloodChargeCaps) return null;
     if (!bloodChargeCaps.has_blood_tap_talent) {
-      return null // Don't show if player doesn't have Blood Tap talent
+      return null; // Don't show if player doesn't have Blood Tap talent
     }
 
-    const totalCaps = bloodChargeCaps.total_caps
-    const totalWasted = bloodChargeCaps.total_charges_wasted
-    let icon = <i className="fa fa-check green" aria-hidden="true"></i>
+    const totalCaps = bloodChargeCaps.total_caps;
+    const totalWasted = bloodChargeCaps.total_charges_wasted;
+    let icon = <i className="fa fa-check green" aria-hidden="true"></i>;
     if (totalCaps > 5) {
-      icon = <i className="fa fa-times red" aria-hidden="true"></i>
+      icon = <i className="fa fa-times red" aria-hidden="true"></i>;
     } else if (totalCaps > 2) {
-      icon = <i className="fa fa-warning yellow" aria-hidden="true"></i>
+      icon = <i className="fa fa-warning yellow" aria-hidden="true"></i>;
     }
 
     return (
       <div className={"blood-charge-caps"}>
         {icon}
-        Exceeded blood charge cap: <span className={"hl"}>{totalCaps}</span> times ({totalWasted} charges wasted)
+        Exceeded blood charge cap:{" "}
+        <span className={"hl"}>{totalCaps}</span> times ({totalWasted} charges
+        wasted)
       </div>
-    )
-  }, [])
+    );
+  }, []);
 
+  // -----------------------------
+  // Sub Rogue helpers
+  // -----------------------------
+  const formatEnergy = useCallback((energy) => {
+    if (!energy) return null;
+    const cappedFraction = energy.capped_fraction || 0;
+    const cappedTimeMs = energy.capped_time_ms || 0;
+    const cappedPercent = (cappedFraction * 100).toFixed(1);
 
+    return (
+      <div className="energy-usage">
+        <i className="fa fa-bolt hl" aria-hidden="true"></i>
+        You were energy-capped for{" "}
+        <span className="hl">
+          {cappedPercent}% ({(cappedTimeMs / 1000).toFixed(1)}s)
+        </span>{" "}
+        of the fight
+      </div>
+    );
+  }, []);
+
+  const formatComboPoints = useCallback((comboPoints) => {
+    if (!comboPoints) return null;
+    const wasted = comboPoints.wasted_cp || 0;
+
+    return (
+      <div className="cp-waste">
+        <i className="fa fa-info hl" aria-hidden="true"></i>
+        You wasted{" "}
+        <span className="hl">
+          {wasted} combo point{wasted === 1 ? "" : "s"}
+        </span>
+      </div>
+    );
+  }, []);
+
+  const formatCooldownUsage = useCallback((label, usage) => {
+    if (!usage) return null;
+    const num = usage.num_casts;
+    const max = usage.max_usages;
+
+    let icon, color;
+    const ratio = max > 0 ? num / max : 1;
+
+    if (ratio >= 0.95) {
+      icon = <i className="fa fa-check green" aria-hidden="true"></i>;
+      color = "green";
+    } else if (ratio >= 0.7) {
+      icon = <i className="fa fa-warning yellow" aria-hidden="true"></i>;
+      color = "yellow";
+    } else {
+      icon = <i className="fa fa-times red" aria-hidden="true"></i>;
+      color = "red";
+    }
+
+    return (
+      <div className="cd-usage">
+        {icon}
+        {label}:{" "}
+        <span className={color}>
+          {num} / {max}
+        </span>
+      </div>
+    );
+  }, []);
+
+  // -----------------------------
+  // Main render
+  // -----------------------------
   if (analysis.isLoading || analysis.error) {
-    return;
+    return null;
   }
 
   const data = analysis.data;
   const fight = data.fight_metadata;
   const events = data.events;
 
-  let fightRanking, playerRanking, dps
-  if (Object.keys(fight.rankings).length !== 0) {
-    fightRanking = fight.rankings.fight_ranking?.speed_percentile || "n/a"
-    playerRanking = fight.rankings.player_ranking?.rank_percentile || "n/a"
-    dps = Math.round(fight.rankings.player_ranking?.dps) || "n/a"
+  let fightRanking, playerRanking, dps;
+  if (fight.rankings && Object.keys(fight.rankings).length !== 0) {
+    fightRanking = fight.rankings.fight_ranking?.speed_percentile || "n/a";
+    playerRanking = fight.rankings.player_ranking?.rank_percentile || "n/a";
+    dps = Math.round(fight.rankings.player_ranking?.dps) || "n/a";
   } else {
-    fightRanking = "n/a"
-    playerRanking = "n/a"
-    dps = "n/a"
+    fightRanking = "n/a";
+    playerRanking = "n/a";
+    dps = "n/a";
   }
-  const summary = data.analysis;
-  const isUnholy = data.spec === "Unholy"
+
+  const summary = data.analysis || {};
+  const spec = data.spec;
+  const isUnholy = spec === "Unholy";
+  const isFrost = spec === "Frost";
+  const isSubRogue = spec === "Subtlety";
+  const isDK = isUnholy || isFrost;
+
+  const rpHeaderLabel = isSubRogue ? "Energy" : "RP";
+  const bcHeaderLabel = isSubRogue ? "CP" : "BC";
 
   return (
     <div className={"analysis-summary"}>
-    <div className="summary-data">
-    {/*<h3>Summary Data</h3>
-          <pre>{JSON.stringify(summary, null, 2)}</pre>*/}
-        </div>
+      <div className="summary-data">
+        {/* Debug dump if needed
+        <h3>Summary Data</h3>
+        <pre>{JSON.stringify(summary, null, 2)}</pre>
+        */}
+      </div>
 
       <div className={"fight-summary"}>
         <h2>{fight.source}</h2>
@@ -733,41 +868,128 @@ const Summary = () => {
           <div className="fight-analysis">
             <div className="analysis-section">
               <h3>Speed</h3>
-              {formatGCDLatency(summary.gcd_latency, isUnholy)}
-              {summary.killing_machine && formatKillingMachineSpeed(summary.killing_machine)}
+              {summary.gcd_latency &&
+                formatGCDLatency(summary.gcd_latency, isUnholy || isSubRogue)}
+              {isFrost &&
+                summary.killing_machine &&
+                formatKillingMachineSpeed(summary.killing_machine)}
             </div>
 
             <div className="analysis-section">
               <h3>General</h3>
-              {summary.plague_leech && formatPlagueLeech(summary.plague_leech, isUnholy)}
-              {summary.empowered_rune_weapon && formatEmpoweredRuneWeapon(summary.empowered_rune_weapon)}
-              {summary.melee_uptime !== undefined && formatUpTime(summary.melee_uptime, "Melee")}
-              {summary.blood_plague_uptime !== undefined && formatUpTime(summary.blood_plague_uptime, "Blood Plague")}
-              {summary.frost_fever_uptime !== undefined && formatUpTime(summary.frost_fever_uptime, "Frost Fever")}
-              {summary.runic_power && formatRunicPower(summary.runic_power)}
-              {summary.blood_charge_caps && formatBloodChargeCaps(summary.blood_charge_caps)}
+              {isDK &&
+                summary.plague_leech &&
+                formatPlagueLeech(summary.plague_leech, isUnholy)}
+              {isDK &&
+                summary.empowered_rune_weapon &&
+                formatEmpoweredRuneWeapon(summary.empowered_rune_weapon)}
+              {summary.melee_uptime !== undefined &&
+                formatUpTime(summary.melee_uptime, "Melee")}
+              {isDK &&
+                summary.blood_plague_uptime !== undefined &&
+                formatUpTime(summary.blood_plague_uptime, "Blood Plague")}
+              {isDK &&
+                summary.frost_fever_uptime !== undefined &&
+                formatUpTime(summary.frost_fever_uptime, "Frost Fever")}
+              {isDK && summary.runic_power && formatRunicPower(summary.runic_power)}
+              {isDK &&
+                summary.blood_charge_caps &&
+                formatBloodChargeCaps(summary.blood_charge_caps)}
             </div>
 
             {isUnholy && (
               <div className="analysis-section">
                 <h3>Unholy Rotation</h3>
-                {summary.dnd !== undefined && formatUpTime(summary.dnd.uptime, "Death and Decay", false, summary.dnd.max_uptime)}
-                {summary.dark_transformation_uptime !== undefined && formatUpTime(summary.dark_transformation_uptime, "Dark Transformation", false, summary.dark_transformation_max_uptime)}
-                {summary.unholy_presence_uptime !== undefined && formatUpTime(summary.unholy_presence_uptime, "Unholy Presence")}
-                {summary.festering_strike_waste && formatFesteringStrikeWaste(summary.festering_strike_waste)}
+                {summary.dnd !== undefined &&
+                  formatUpTime(
+                    summary.dnd.uptime,
+                    "Death and Decay",
+                    false,
+                    summary.dnd.max_uptime
+                  )}
+                {summary.dark_transformation_uptime !== undefined &&
+                  formatUpTime(
+                    summary.dark_transformation_uptime,
+                    "Dark Transformation",
+                    false,
+                    summary.dark_transformation_max_uptime
+                  )}
+                {summary.unholy_presence_uptime !== undefined &&
+                  formatUpTime(
+                    summary.unholy_presence_uptime,
+                    "Unholy Presence"
+                  )}
+                {summary.festering_strike_waste &&
+                  formatFesteringStrikeWaste(summary.festering_strike_waste)}
               </div>
             )}
 
-            {!isUnholy && (
+            {isFrost && (
               <div className="analysis-section">
                 <h3>Frost Rotation</h3>
-                {summary.killing_machine && formatKillingMachineRotation(summary.killing_machine)}
-                {summary.killing_machine && formatKillingMachineBreakdown(summary.killing_machine)}
-                {summary.obliterate_during_rime && formatObliterateDuringRime(summary.obliterate_during_rime)}
-                {summary.obliterate_death_rune_usage && formatObliterateDeathRuneUsage(summary.obliterate_death_rune_usage)}
-                {summary.plague_strike_death_rune_usage && formatPlagueStrikeDeathRuneUsage(summary.plague_strike_death_rune_usage)}
-                {summary.pillar_of_frost_usage && formatPillarOfFrostUsage(summary.pillar_of_frost_usage)}
+                {summary.killing_machine &&
+                  formatKillingMachineRotation(summary.killing_machine)}
+                {summary.killing_machine &&
+                  formatKillingMachineBreakdown(summary.killing_machine)}
+                {summary.obliterate_during_rime &&
+                  formatObliterateDuringRime(summary.obliterate_during_rime)}
+                {summary.obliterate_death_rune_usage &&
+                  formatObliterateDeathRuneUsage(
+                    summary.obliterate_death_rune_usage
+                  )}
+                {summary.plague_strike_death_rune_usage &&
+                  formatPlagueStrikeDeathRuneUsage(
+                    summary.plague_strike_death_rune_usage
+                  )}
+                {summary.pillar_of_frost_usage &&
+                  formatPillarOfFrostUsage(summary.pillar_of_frost_usage)}
               </div>
+            )}
+
+            {isSubRogue && (
+              <>
+                <div className="analysis-section">
+                  <h3>Subtlety Rotation</h3>
+                  {summary.slice_and_dice_uptime !== undefined &&
+                    formatUpTime(
+                      summary.slice_and_dice_uptime,
+                      "Slice and Dice"
+                    )}
+                  {summary.rupture_uptime !== undefined &&
+                    formatUpTime(summary.rupture_uptime, "Rupture")}
+                  {summary.deadly_poison_uptime !== undefined &&
+                    formatUpTime(
+                      summary.deadly_poison_uptime,
+                      "Deadly Poison"
+                    )}
+                  {summary.energy && formatEnergy(summary.energy)}
+                  {summary.combo_points &&
+                    formatComboPoints(summary.combo_points)}
+                </div>
+
+                <div className="analysis-section">
+                  <h3>Cooldowns</h3>
+                  {summary.shadow_dance_usage &&
+                    formatCooldownUsage(
+                      "Shadow Dance",
+                      summary.shadow_dance_usage
+                    )}
+                  {summary.vanish_usage &&
+                    formatCooldownUsage("Vanish", summary.vanish_usage)}
+                  {summary.vendetta_usage &&
+                    formatCooldownUsage("Vendetta", summary.vendetta_usage)}
+                  {summary.adrenaline_rush_usage &&
+                    formatCooldownUsage(
+                      "Adrenaline Rush",
+                      summary.adrenaline_rush_usage
+                    )}
+                  {summary.killing_spree_usage &&
+                    formatCooldownUsage(
+                      "Killing Spree",
+                      summary.killing_spree_usage
+                    )}
+                </div>
+              </>
             )}
 
             {summary.soul_reaper && (
@@ -778,26 +1000,32 @@ const Summary = () => {
 
             {summary.outbreak_snapshots && (
               <div className="analysis-section">
-                <OutbreakAnalysis outbreak_snapshots={summary.outbreak_snapshots} />
+                <OutbreakAnalysis
+                  outbreak_snapshots={summary.outbreak_snapshots}
+                />
               </div>
             )}
 
             <div className="analysis-section">
               <h3>Miscellaneous</h3>
-              {summary.trinket_usages && summary.trinket_usages.map((trinket, index) => (
-                <div key={index}>
-                  {formatUsage(
-                    trinket.num_actual,
-                    trinket.num_possible,
-                    <>{formatIcon(trinket.name, trinket.icon)} {trinket.name}</>,
-                  )}
-                </div>
-              ))}
-              {summary.synapse_springs && formatUsage(
-                summary.synapse_springs.num_actual,
-                summary.synapse_springs.num_possible,
-                "Synapse Springs",
-              )}
+              {summary.trinket_usages &&
+                summary.trinket_usages.map((trinket, index) => (
+                  <div key={index}>
+                    {formatUsage(
+                      trinket.num_actual,
+                      trinket.num_possible,
+                      <>
+                        {formatIcon(trinket.name, trinket.icon)} {trinket.name}
+                      </>
+                    )}
+                  </div>
+                ))}
+              {summary.synapse_springs &&
+                formatUsage(
+                  summary.synapse_springs.num_actual,
+                  summary.synapse_springs.num_possible,
+                  "Synapse Springs"
+                )}
               {summary.potion_usage && formatPotions(summary.potion_usage)}
               {summary.flask_usage && formatFlask(summary.flask_usage)}
               {summary.food_usage && formatFood(summary.food_usage)}
@@ -805,40 +1033,44 @@ const Summary = () => {
           </div>
         </Tab>
 
-        <Tab label="Pets" icon={<i className="fa fa-paw" />}>
-          <div className="fight-analysis">
-            {summary.ghoul && (
-              <div className="analysis-section">
-                <GhoulAnalysis ghoul={summary.ghoul} />
-              </div>
-            )}
-            {summary.raise_dead && (
-              <div className="analysis-section">
-                <RaiseDeadAnalysis raise_dead={summary.raise_dead} />
-              </div>
-            )}
-            {summary.dark_transformation && (
-              <div className="analysis-section">
-                <DarkTransformationAnalysis dark_transformation={summary.dark_transformation} />
-              </div>
-            )}
-            {summary.gargoyle && (
-              <div className="analysis-section">
-                <GargoyleAnalysis gargoyle={summary.gargoyle} />
-              </div>
-            )}
-            {summary.army && (
-              <div className="analysis-section">
-                <ArmyAnalysis army={summary.army} />
-              </div>
-            )}
-            {summary.army_dynamic && (
-              <div className="analysis-section">
-                <ArmyDynamicAnalysis army_dynamic={summary.army_dynamic} />
-              </div>
-            )}
-          </div>
-        </Tab>
+        {isDK && (
+          <Tab label="Pets" icon={<i className="fa fa-paw" />}>
+            <div className="fight-analysis">
+              {summary.ghoul && (
+                <div className="analysis-section">
+                  <GhoulAnalysis ghoul={summary.ghoul} />
+                </div>
+              )}
+              {summary.raise_dead && (
+                <div className="analysis-section">
+                  <RaiseDeadAnalysis raise_dead={summary.raise_dead} />
+                </div>
+              )}
+              {summary.dark_transformation && (
+                <div className="analysis-section">
+                  <DarkTransformationAnalysis
+                    dark_transformation={summary.dark_transformation}
+                  />
+                </div>
+              )}
+              {summary.gargoyle && (
+                <div className="analysis-section">
+                  <GargoyleAnalysis gargoyle={summary.gargoyle} />
+                </div>
+              )}
+              {summary.army && (
+                <div className="analysis-section">
+                  <ArmyAnalysis army={summary.army} />
+                </div>
+              )}
+              {summary.army_dynamic && (
+                <div className="analysis-section">
+                  <ArmyDynamicAnalysis army_dynamic={summary.army_dynamic} />
+                </div>
+              )}
+            </div>
+          </Tab>
+        )}
 
         <Tab label="Timeline" icon={<i className="fa fa-clock-o" />}>
           <div className="fight-analysis">
@@ -848,13 +1080,9 @@ const Summary = () => {
                   <tr>
                     <th>Time</th>
                     <th>Ability</th>
-                    <th>RP</th>
-                    <th>BC</th>
-                    {summary.has_rune_spend_error ? null : (
-                      <>
-                        <th>Runes</th>
-                      </>
-                    )}
+                    <th>{rpHeaderLabel}</th>
+                    <th>{bcHeaderLabel}</th>
+                    {isDK && !summary.has_rune_spend_error && <th>Runes</th>}
                     <th>Buffs</th>
                     <th>Debuffs</th>
                     {data.show_procs && <th>Procs Used</th>}
@@ -862,7 +1090,13 @@ const Summary = () => {
                 </thead>
                 <tbody>
                   {events.map((event, i) =>
-                    formatEvent(event, !summary.has_rune_spend_error, data.show_procs, i)
+                    formatEvent(
+                      event,
+                      isDK && !summary.has_rune_spend_error,
+                      data.show_procs,
+                      i,
+                      isSubRogue
+                    )
                   )}
                 </tbody>
               </table>
@@ -875,5 +1109,5 @@ const Summary = () => {
 };
 
 export const Analysis = () => {
-  return <Summary />
-}
+  return <Summary />;
+};
