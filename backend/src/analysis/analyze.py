@@ -9,11 +9,10 @@ from analysis.core_analysis import (
     RuneHasteTracker,
     TalentPreprocessor,
 )
-from analysis.frost_analysis import (
-    FrostAnalysisConfig,
-)
+from analysis.frost_analysis import FrostAnalysisConfig
 from analysis.items import ItemPreprocessor, TrinketPreprocessor
 from analysis.unholy_analysis import FesteringStrikeTracker, UnholyAnalysisConfig
+from analysis.sub_rogue_analysis import SubRogueAnalysisConfig  # NEW
 from report import Fight, Report
 
 
@@ -22,6 +21,7 @@ class Analyzer:
         "Default": CoreAnalysisConfig,
         "Frost": FrostAnalysisConfig,
         "Unholy": UnholyAnalysisConfig,
+        "Subtlety": SubRogueAnalysisConfig,  # NEW
     }
 
     def __init__(self, fight: Fight):
@@ -36,6 +36,9 @@ class Analyzer:
         self.runes = None
         self._analyzers = []  # Store analyzers to access their results later
 
+    # -------------------------------
+    # Preprocessing
+    # -------------------------------
     def _preprocess_events(self):
         dead_zone_analyzer = self._get_dead_zone_analyzer()
         talent_preprocessor = self._get_talent_preprocessor()
@@ -44,8 +47,15 @@ class Analyzer:
         source_id = self._fight.source.id
         pet_analyzer = PetNameDetector()
         items = self._get_item_preprocessor()
-        aotd = PrepullArmyOfTheDeadTracker(self.runes)
 
+        # Some analyzers are DK-only (Army, runes). Only create if we have runes.
+        aotd = (
+            PrepullArmyOfTheDeadTracker(self.runes)
+            if self.runes is not None
+            else None
+        )
+
+        # First pass: preprocess
         for event in self._events:
             if event["sourceID"] == source_id or event["targetID"] == source_id:
                 dead_zone_analyzer.preprocess_event(event)
@@ -54,10 +64,12 @@ class Analyzer:
                 debuff_tracker.preprocess_event(event)
                 items.preprocess_event(event)
 
-            # Pet analyzers
+            # Pet analyzers (safe for non-DK too)
             pet_analyzer.preprocess_event(event)
-            aotd.preprocess_event(event)
+            if aotd is not None:
+                aotd.preprocess_event(event)
 
+        # Second pass: decorate
         for event in self._events:
             dead_zone_analyzer.decorate_event(event)
             buff_tracker.decorate_event(event)
@@ -65,7 +77,8 @@ class Analyzer:
             talent_preprocessor.decorate_event(event)
             items.decorate_event(event)
             pet_analyzer.decorate_event(event)
-            aotd.decorate_event(event)
+            if aotd is not None:
+                aotd.decorate_event(event)
 
         return dead_zone_analyzer
 
@@ -99,45 +112,52 @@ class Analyzer:
             combatant_info = self._fight.get_combatant_info(source_id)
             starting_auras = combatant_info.get("auras", [])
 
+            # DK buffs (existing) + Rogue buffs (new)
+            tracked_buffs = {
+                "Pillar of Frost",
+                "Heroism",
+                "Bloodlust",
+                "Time Warp",
+                "Slayer",
+                "Thrill of Victory",
+                "Heartened",
+                "Race Against Death",
+                "Eye of Doom",
+                "Typhoon",
+                "Polarization",
+                "King of Boars",
+                "Fatality",
+                "Potion of Mogu Power",
+                "Rime",
+                "Synapse Springs",
+                "Sudden Doom",
+                "Killing Machine",
+                "Berserking",
+                "Blood Fury",
+                "Swordguard Embroidery",
+                "Unholy Strength",
+                "Stolen Power",
+                "Free Your Mind",
+                "Cinderglacier",
+                "Death Eater",  # T11 4pc
+                "Smoldering Rune",  # T12 2pc
+                "Runic Corruption",
+                "Unholy Frenzy",
+                "Flask of Winter's Bite",
+                "Flask of Falling Leaves",
+                "Well Fed",  # MoP food buffs
+                "Blood Presence",
+                "Unholy Presence",
+                "Frost Presence",
+                # Rogue buffs (Sub & general)
+                "Slice and Dice",
+                "Shadow Dance",
+                "Find Weakness",
+                "Tricks of the Trade",
+            } | set(TrinketPreprocessor.TRINKEY_MAP_BY_BUFF_NAME.keys())
+
             self._buff_tracker = BuffTracker(
-                {
-                    "Pillar of Frost",
-                    "Heroism",
-                    "Bloodlust",
-                    "Time Warp",
-                    "Slayer",
-                    "Thrill of Victory",
-                    "Heartened",
-                    "Race Against Death",
-                    "Eye of Doom",
-                    "Typhoon",
-                    "Polarization",
-                    "King of Boars",
-                    "Fatality",
-                    "Potion of Mogu Power",
-                    "Rime",
-                    "Synapse Springs",
-                    "Sudden Doom",
-                    "Killing Machine",
-                    "Berserking",
-                    "Blood Fury",
-                    "Swordguard Embroidery",
-                    "Unholy Strength",
-                    "Stolen Power",
-                    "Free Your Mind",
-                    "Cinderglacier",
-                    "Death Eater",  # T11 4pc
-                    "Smoldering Rune",  # T12 2pc
-                    "Runic Corruption",
-                    "Unholy Frenzy",
-                    "Flask of Winter's Bite",
-                    "Flask of Falling Leaves",
-                    "Well Fed",  # MoP food buffs
-                    "Blood Presence",
-                    "Unholy Presence",
-                    "Frost Presence",
-                }
-                | set(TrinketPreprocessor.TRINKEY_MAP_BY_BUFF_NAME.keys()),
+                tracked_buffs,
                 self._fight.duration,
                 starting_auras,
                 self._detect_spec(),
@@ -148,10 +168,25 @@ class Analyzer:
         source_id = self._fight.source.id
         return DebuffTracker(self._fight.duration, source_id)
 
+    # -------------------------------
+    # Spec detection (DK + Sub Rogue)
+    # -------------------------------
     def _detect_spec(self):
         if not self.__spec:
 
             def detect():
+                # Try to use combatant info if it has an explicit spec name
+                combatant_info = self._fight.get_combatant_info(
+                    self._fight.source.id
+                )
+                spec_name = combatant_info.get("spec") or combatant_info.get("specName")
+                cls = combatant_info.get("type") or combatant_info.get("class")
+
+                # If logs explicitly say Subtlety, trust that
+                if isinstance(spec_name, str) and "subtle" in spec_name.lower():
+                    return "Subtlety"
+
+                # DK spell-based detection (original logic)
                 for event in self._events:
                     if event["type"] == "cast" and event["ability"] in (
                         "Howling Blast",
@@ -164,11 +199,28 @@ class Analyzer:
                     ):
                         return "Unholy"
 
+                # Rogue spell-based detection for Subtlety
+                # Only bother if combatant looks like a Rogue
+                if isinstance(cls, str) and cls.lower() == "rogue":
+                    for event in self._events:
+                        if event["type"] != "cast":
+                            continue
+                        if event["ability"] in (
+                            "Shadow Dance",
+                            "Backstab",
+                            "Hemorrhage",
+                            "Ambush",
+                        ):
+                            return "Subtlety"
+
                 return None
 
             self.__spec = detect()
         return self.__spec
 
+    # -------------------------------
+    # Event filtering & display
+    # -------------------------------
     def _filter_events(self):
         """Remove any events we don't care to analyze or show"""
         events = []
@@ -234,12 +286,12 @@ class Analyzer:
             ):
                 events.append(event)
 
-        # Add death rune waste events from FesteringStrikeTracker and blood charge cap events
+        # Add extra timeline events from analyzers (DK-only bits remain as-is)
         if hasattr(self, "_analyzers"):
             for analyzer in self._analyzers:
+                # Unholy death-rune waste events
                 if isinstance(analyzer, FesteringStrikeTracker):
                     for waste_event in analyzer.death_rune_waste_events:
-                        # Create a timeline event similar to disease drops
                         timeline_event = {
                             "timestamp": waste_event["timestamp"],
                             "type": "death_rune_waste",
@@ -248,20 +300,20 @@ class Analyzer:
                             "targetID": self._fight.source.id,
                             "death_runes_wasted": waste_event["death_runes_wasted"],
                             "message": waste_event["message"],
-                            "buffs": [],  # Will be decorated later
-                            "debuffs": [],  # Will be decorated later
-                            "runes_before": [],  # Empty runes for display events
-                            "runes": [],  # Empty runes for display events
-                            "runic_power": 0,  # Default RP
-                            "modifies_runes": False,  # Don't show rune changes
-                            "has_gcd": False,  # Not a GCD event
-                            "ability_type": 0,  # Default ability type
+                            "buffs": [],
+                            "debuffs": [],
+                            "runes_before": [],
+                            "runes": [],
+                            "runic_power": 0,
+                            "modifies_runes": False,
+                            "has_gcd": False,
+                            "ability_type": 0,
                         }
                         events.append(timeline_event)
 
+                # Blood charge cap events (Frost)
                 if isinstance(analyzer, BloodChargeCapAnalyzer):
                     for cap_event in analyzer._cap_events:
-                        # Create a timeline event for blood charge caps
                         timeline_event = {
                             "timestamp": cap_event["timestamp"],
                             "type": "blood_charge_cap",
@@ -270,18 +322,18 @@ class Analyzer:
                             "targetID": self._fight.source.id,
                             "charges_wasted": cap_event["charges_wasted"],
                             "message": cap_event["message"],
-                            "buffs": [],  # Will be decorated later
-                            "debuffs": [],  # Will be decorated later
-                            "runes_before": [],  # Empty runes for display events
-                            "runes": [],  # Empty runes for display events
-                            "runic_power": 0,  # Default RP
-                            "modifies_runes": False,  # Don't show rune changes
-                            "has_gcd": False,  # Not a GCD event
-                            "ability_type": 0,  # Default ability type
+                            "buffs": [],
+                            "debuffs": [],
+                            "runes_before": [],
+                            "runes": [],
+                            "runic_power": 0,
+                            "modifies_runes": False,
+                            "has_gcd": False,
+                            "ability_type": 0,
                         }
                         events.append(timeline_event)
 
-                # Add KM usage timing events for frost analysis
+                # Frost-only imports are kept local to avoid circular imports on rogue
                 from analysis.frost_analysis import (
                     KMAnalyzer,
                     ObliterateAnalyzer,
@@ -292,12 +344,10 @@ class Analyzer:
                     for km_event in analyzer._km_usage_events:
                         events.append(km_event)
 
-                # Add Obliterate death rune usage events for frost analysis
                 if isinstance(analyzer, ObliterateAnalyzer):
                     for death_rune_event in analyzer._death_rune_events:
                         events.append(death_rune_event)
 
-                # Add Plague Strike death rune usage events for frost analysis
                 if isinstance(analyzer, PlagueStrikeAnalyzer):
                     for death_rune_event in analyzer._death_rune_events:
                         events.append(death_rune_event)
@@ -306,14 +356,29 @@ class Analyzer:
         events.sort(key=lambda x: x["timestamp"])
         return events
 
+    # -------------------------------
+    # Main analyze() entrypoint
+    # -------------------------------
     def analyze(self):
-        self.runes = self._analysis_config.create_rune_tracker()
-        rune_haste_tracker = self._create_rune_haste_tracker(self.runes)
+        # Only DK specs actually use runes
+        spec = self._detect_spec()
+        if spec in ("Frost", "Unholy"):
+            self.runes = self._analysis_config.create_rune_tracker()
+            rune_haste_tracker = self._create_rune_haste_tracker(self.runes)
+        else:
+            self.runes = None
+            rune_haste_tracker = None
 
         self._preprocess_events()
 
         buff_tracker = self._get_buff_tracker()
-        analyzers = [rune_haste_tracker, self.runes, buff_tracker]
+        analyzers = []
+
+        if self.runes is not None and rune_haste_tracker is not None:
+            analyzers.extend([rune_haste_tracker, self.runes])
+
+        analyzers.append(buff_tracker)
+
         analyzers.extend(
             self._analysis_config.get_analyzers(
                 self._fight,
@@ -329,9 +394,10 @@ class Analyzer:
         for event in self._events:
             for analyzer in analyzers:
                 if (
-                    event["sourceID"] == source_id or event["targetID"] == source_id
+                    event["sourceID"] == source_id
+                    or event["targetID"] == source_id
                 ) or (
-                    analyzer.INCLUDE_PET_EVENTS
+                    getattr(analyzer, "INCLUDE_PET_EVENTS", False)
                     and (event["is_owner_pet_source"] or event["is_owner_pet_target"])
                 ):
                     analyzer.add_event(event)
