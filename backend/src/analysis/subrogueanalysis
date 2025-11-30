@@ -1,0 +1,427 @@
+from collections import defaultdict
+
+from analysis.base import (
+    AnalysisScorer,
+    BaseAnalyzer,
+    ScoreWeight,
+    Window,
+    calculate_uptime,
+    combine_windows,
+)
+from analysis.core_analysis import (
+    BuffTracker,
+    BuffUptimeAnalyzer,
+    CoreAnalysisConfig,
+    MeleeUptimeAnalyzer,
+    SynapseSpringsAnalyzer,
+    TrinketAnalyzer,
+)
+from report import Fight
+
+
+# ============================================
+# Generic debuff uptime helper
+# ============================================
+class DebuffUptimeAnalyzer(BaseAnalyzer):
+    class WindowManager:
+        def __init__(self, end_time):
+            self._windows_by_target = defaultdict(list)
+            self._window_by_target = {}
+            self._end_time = end_time
+
+        def add_window(self, target, start, end=None):
+            window = Window(start, end)
+            self._window_by_target[target] = window
+            self._windows_by_target[target].append(window)
+
+        def end_window(self, target, end):
+            window = self._window_by_target.get(target)
+            if window:
+                window.end = end
+
+        def has_active_window(self, target):
+            window = self._window_by_target.get(target)
+            return window and window.end is None
+
+        def coalesce(self):
+            windows = [
+                window
+                for windows in self._windows_by_target.values()
+                for window in windows
+            ]
+
+            for window in windows:
+                if window.end is None:
+                    window.end = self._end_time
+
+            return combine_windows(windows)
+
+    def __init__(self, end_time, debuff_name, ignore_windows):
+        self._debuff_name = debuff_name
+        self._end_time = end_time
+        self._ignore_windows = ignore_windows
+        self._wm = self.WindowManager(end_time)
+
+    def add_event(self, event):
+        if event["type"] not in ("applydebuff", "removedebuff", "refreshdebuff"):
+            return
+
+        if event["ability"] != self._debuff_name:
+            return
+
+        if event["type"] in ("applydebuff", "refreshdebuff"):
+            if not self._wm.has_active_window(event["target"]):
+                self._wm.add_window(event["target"], event["timestamp"])
+        elif event["type"] == "removedebuff":
+            self._wm.end_window(event["target"], event["timestamp"])
+
+    def uptime(self):
+        windows = self._wm.coalesce()
+
+        return calculate_uptime(
+            windows,
+            self._ignore_windows,
+            self._end_time,
+        )
+
+    def score(self):
+        return self.uptime()
+
+
+# ============================================
+# Subtlety Rogue maintenance / dots
+# ============================================
+class SliceAndDiceUptimeAnalyzer(BuffUptimeAnalyzer):
+    """
+    Tracks uptime of Slice and Dice.
+    """
+
+    def __init__(self, duration, buff_tracker, ignore_windows):
+        super().__init__(duration, buff_tracker, ignore_windows, "Slice and Dice")
+
+    def report(self):
+        return {
+            "slice_and_dice_uptime": self.uptime(),
+        }
+
+
+class RuptureUptimeAnalyzer(DebuffUptimeAnalyzer):
+    def __init__(self, end_time, ignore_windows):
+        super().__init__(end_time, "Rupture", ignore_windows)
+
+    def report(self):
+        return {
+            "rupture_uptime": self.uptime(),
+        }
+
+
+class DeadlyPoisonUptimeAnalyzer(DebuffUptimeAnalyzer):
+    def __init__(self, end_time, ignore_windows):
+        super().__init__(end_time, "Deadly Poison", ignore_windows)
+
+    def report(self):
+        return {
+            "deadly_poison_uptime": self.uptime(),
+        }
+
+
+# ============================================
+# Resources (Energy / CP)
+# ============================================
+class EnergyAnalyzer(BaseAnalyzer):
+    """
+    Estimates time spent energy capped.
+
+    Reports:
+      "energy": {
+        "capped_fraction": float,
+        "capped_time_ms": int,
+      }
+    """
+
+    def __init__(self, fight_duration, ignore_windows, cap=100):
+        self._fight_duration = fight_duration
+        self._ignore_windows = ignore_windows
+        self._cap = cap
+        self._last_timestamp = None
+        self._last_energy = None
+        self._capped_time = 0
+
+    def _is_in_ignore_window(self, timestamp):
+        for window in self._ignore_windows:
+            if window.start <= timestamp <= window.end:
+                return True
+        return False
+
+    def _get_energy_from_event(self, event):
+        # Prefer explicit field if you add one in your event builder
+        if "energy" in event:
+            return event["energy"]
+
+        resources = event.get("resources") or []
+
+        for res in resources:
+            rtype = (res.get("type") or "").lower()
+            if rtype in ("energy", "focus"):
+                return (
+                    res.get("amount")
+                    or res.get("resource")
+                    or res.get("value")
+                )
+        return None
+
+    def add_event(self, event):
+        ts = event.get("timestamp")
+        if ts is None:
+            return
+
+        energy = self._get_energy_from_event(event)
+        if energy is None:
+            return
+
+        if self._last_timestamp is not None and not self._is_in_ignore_window(ts):
+            dt = ts - self._last_timestamp
+            if self._last_energy is not None and self._last_energy >= self._cap:
+                self._capped_time += dt
+
+        self._last_timestamp = ts
+        self._last_energy = energy
+
+    def uptime(self):
+        ignore_duration = sum(w.duration for w in self._ignore_windows)
+        effective_duration = max(self._fight_duration - ignore_duration, 1)
+        return self._capped_time / effective_duration
+
+    def score(self):
+        capped = self.uptime()
+        if capped <= 0.05:
+            return 1.0
+        if capped >= 0.20:
+            return 0.0
+        return max(0.0, 1.0 - (capped - 0.05) / 0.15)
+
+    def report(self):
+        return {
+            "energy": {
+                "capped_fraction": self.uptime(),
+                "capped_time_ms": self._capped_time,
+            }
+        }
+
+
+class ComboPointWasteAnalyzer(BaseAnalyzer):
+    """
+    Very simple CP waste tracker.
+
+    Reports:
+      "combo_points": { "wasted_cp": int }
+    """
+
+    def __init__(self):
+        self._last_cp = 0
+        self._wasted_cp = 0
+
+    def _get_cp_from_event(self, event):
+        if "combo_points" in event:
+            return event["combo_points"]
+
+        resources = event.get("resources") or []
+        for res in resources:
+            rtype = (res.get("type") or "").lower()
+            if rtype in ("combopoints", "combo_points", "combo"):
+                return (
+                    res.get("amount")
+                    or res.get("resource")
+                    or res.get("value")
+                )
+        return None
+
+    def add_event(self, event):
+        cp = self._get_cp_from_event(event)
+        if cp is None:
+            return
+
+        if cp > 5 and cp > self._last_cp:
+            self._wasted_cp += cp - 5
+
+        self._last_cp = cp
+
+    def score(self):
+        if self._wasted_cp == 0:
+            return 1.0
+        if self._wasted_cp <= 5:
+            return 0.8
+        if self._wasted_cp <= 15:
+            return 0.5
+        return 0.2
+
+    def report(self):
+        return {
+            "combo_points": {
+                "wasted_cp": self._wasted_cp,
+            }
+        }
+
+
+# ============================================
+# Cooldown usage
+# ============================================
+class CooldownUsageAnalyzer(BaseAnalyzer):
+    """
+    Generic CD usage tracker.
+
+    Subclasses map to specific keys in report().
+    """
+
+    def __init__(self, fight_end_time, ability_name, cooldown_ms):
+        self._ability = ability_name
+        self._cd = cooldown_ms
+        self._fight_end_time = fight_end_time
+        self._num_casts = 0
+
+    @property
+    def max_usages(self):
+        return max(
+            1 + (self._fight_end_time - 10000) // self._cd,
+            self._num_casts,
+        )
+
+    def add_event(self, event):
+        if event["type"] == "cast" and event["ability"] == self._ability:
+            self._num_casts += 1
+
+    def _payload(self):
+        return {
+            "ability": self._ability,
+            "num_casts": self._num_casts,
+            "max_usages": self.max_usages,
+        }
+
+    def score(self):
+        return (
+            self._num_casts / self.max_usages if self.max_usages > 0 else 1.0
+        )
+
+
+class VendettaAnalyzer(CooldownUsageAnalyzer):
+    def __init__(self, fight_end_time):
+        super().__init__(fight_end_time, "Vendetta", cooldown_ms=120000)
+
+    def report(self):
+        return {"vendetta_usage": self._payload()}
+
+
+class AdrenalineRushAnalyzer(CooldownUsageAnalyzer):
+    def __init__(self, fight_end_time):
+        super().__init__(fight_end_time, "Adrenaline Rush", cooldown_ms=180000)
+
+    def report(self):
+        return {"adrenaline_rush_usage": self._payload()}
+
+
+class KillingSpreeAnalyzer(CooldownUsageAnalyzer):
+    def __init__(self, fight_end_time):
+        super().__init__(fight_end_time, "Killing Spree", cooldown_ms=120000)
+
+    def report(self):
+        return {"killing_spree_usage": self._payload()}
+
+
+class ShadowDanceAnalyzer(CooldownUsageAnalyzer):
+    def __init__(self, fight_end_time):
+        super().__init__(fight_end_time, "Shadow Dance", cooldown_ms=60000)
+
+    def report(self):
+        return {"shadow_dance_usage": self._payload()}
+
+
+class VanishAnalyzer(CooldownUsageAnalyzer):
+    def __init__(self, fight_end_time):
+        super().__init__(fight_end_time, "Vanish", cooldown_ms=120000)
+
+    def report(self):
+        return {"vanish_usage": self._payload()}
+
+
+# ============================================
+# Scoring
+# ============================================
+class SubRogueAnalysisScorer(AnalysisScorer):
+    """
+    Overall score mix for Subtlety.
+    """
+
+    def __init__(self, analyzers, encounter_name=None):
+        super().__init__(analyzers)
+        self.encounter_name = encounter_name
+
+    def get_score_weights(self):
+        return {
+            # Maintenance / DoTs
+            SliceAndDiceUptimeAnalyzer: {"weight": 8},
+            RuptureUptimeAnalyzer: {"weight": 7},
+            DeadlyPoisonUptimeAnalyzer: {"weight": 5},
+            # Resources & uptime
+            EnergyAnalyzer: {"weight": 8},
+            ComboPointWasteAnalyzer: {"weight": 7},
+            MeleeUptimeAnalyzer: {"weight": 7},
+            # Cooldowns
+            ShadowDanceAnalyzer: {"weight": 7},
+            VanishAnalyzer: {"weight": 5},
+            VendettaAnalyzer: {"weight": 3},          # often off-spec CD
+            AdrenalineRushAnalyzer: {"weight": 3},
+            KillingSpreeAnalyzer: {"weight": 3},
+            # Buff/trinkets
+            SynapseSpringsAnalyzer: {"weight": 4},
+            TrinketAnalyzer: {"weight": 4},
+            BuffTracker: {"weight": 2},
+        }
+
+    def report(self):
+        return {
+            "analysis_scores": {
+                "total_score": self.score(),
+            }
+        }
+
+
+# ============================================
+# Spec config
+# ============================================
+class SubRogueAnalysisConfig(CoreAnalysisConfig):
+    """
+    Subtlety Rogue spec config, wired into Analyzer.SPEC_ANALYSIS_CONFIGS.
+    """
+
+    show_procs = True
+    show_speed = True
+
+    def get_analyzers(self, fight: Fight, buff_tracker, dead_zone_analyzer, items):
+        dead_zones = dead_zone_analyzer.get_dead_zones()
+        fight_duration = fight.duration
+        fight_end = fight.start_time + fight.duration
+
+        base = super().get_analyzers(fight, buff_tracker, dead_zone_analyzer, items)
+
+        sub_analyzers = [
+            SliceAndDiceUptimeAnalyzer(fight_duration, buff_tracker, dead_zones),
+            RuptureUptimeAnalyzer(fight_duration, dead_zones),
+            DeadlyPoisonUptimeAnalyzer(fight_duration, dead_zones),
+            EnergyAnalyzer(fight_duration, dead_zones),
+            ComboPointWasteAnalyzer(),
+            VendettaAnalyzer(fight_end),
+            AdrenalineRushAnalyzer(fight_end),
+            KillingSpreeAnalyzer(fight_end),
+            ShadowDanceAnalyzer(fight_end),
+            VanishAnalyzer(fight_end),
+        ]
+
+        return base + sub_analyzers
+
+    def get_scorer(self, analyzers, fight=None):
+        encounter_name = fight.encounter.name if fight else None
+        return SubRogueAnalysisScorer(analyzers, encounter_name)
+
+    # Rogues do not use runes; when the core Analyzer asks DK specs to
+    # create rune trackers, this config will simply never be used for that
+    # because spec detection returns "Subtlety" and we gate rune logic to DK.
